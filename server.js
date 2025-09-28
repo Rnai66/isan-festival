@@ -1,94 +1,74 @@
 const express = require("express");
-const { MongoClient, ObjectId, GridFSBucket } = require("mongodb");
-const multer = require("multer");
+const { MongoClient, GridFSBucket, ObjectId } = require("mongodb");
 const path = require("path");
 
 const app = express();
-const port = 3000;
 
-const uri = "mongodb+srv://rnaibro_db_user:8N0wPmLYgoyhaXed@cluster0.s0gno4s.mongodb.net/myappy";
-const client = new MongoClient(uri);
+// ✅ Render ใช้ PORT จาก env
+const port = process.env.PORT || 3000;
 
-app.use(express.static("public")); // เสิร์ฟ index.html
+// ✅ ใช้ MONGODB_URI จาก env
+const uri = process.env.MONGODB_URI || "mongodb://localhost:27017/myappy";
 
-let db, bucket;
-(async () => {
-  await client.connect();
-  db = client.db("myappy");
-  bucket = new GridFSBucket(db, { bucketName: "banners" });
-  console.log("✅ Connected to MongoDB & GridFS ready");
-})();
-
-// API: รายชื่อผู้ใช้
-app.get("/api/users", async (req, res) => {
-  try {
-    const users = await db.collection("users").find().toArray();
-    res.json(users);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("Database error");
-  }
+// ✅ ป้องกัน TLS error
+const client = new MongoClient(uri, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  tls: true,
+  tlsAllowInvalidCertificates: false,
+  minPoolSize: 1,
+  maxPoolSize: 5,
+  serverSelectionTimeoutMS: 10000
 });
 
-// API: อัปโหลดโปสเตอร์
-const upload = multer({ storage: multer.memoryStorage() });
-app.post("/api/banners/upload", upload.single("file"), async (req, res) => {
+let db;
+let bucket;
+
+async function connectDB() {
   try {
-    const { originalname, mimetype, buffer } = req.file;
-    const { title, day, artist } = req.body;
-
-    const uploadStream = bucket.openUploadStream(originalname, {
-      contentType: mimetype,
-      metadata: { title, day, artist, type: "concert-poster-isan-retro-2569" },
-    });
-
-    uploadStream.end(buffer, () => {
-      res.json({ ok: true, id: uploadStream.id.toString() });
-    });
+    await client.connect();
+    console.log("✅ MongoDB Connected!");
+    db = client.db("myappy");
+    bucket = new GridFSBucket(db, { bucketName: "banners" });
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Upload error");
+    console.error("❌ MongoDB connection error:", err);
   }
-});
+}
+connectDB();
 
-// API: ลิสต์โปสเตอร์
+// ✅ serve static files
+app.use(express.static(path.join(__dirname, "public")));
+
+// ✅ list banners
 app.get("/api/banners", async (req, res) => {
   try {
-    const files = await db
-      .collection("banners.files")
-      .find({})
-      .project({ _id: 1, filename: 1, uploadDate: 1, metadata: 1 })
-      .sort({ "metadata.day": 1 })
-      .toArray();
-    res.json(files.map(f => ({
-      id: f._id,
-      filename: f.filename,
-      title: f.metadata?.title,
-      day: f.metadata?.day,
-      artist: f.metadata?.artist
-    })));
+    if (!db) return res.status(500).json({ error: "DB not connected" });
+    const files = await db.collection("banners.files").find().toArray();
+    res.json(
+      files.map((f) => ({
+        id: f._id,
+        filename: f.filename,
+        title: f.metadata?.title,
+        day: f.metadata?.day,
+        artist: f.metadata?.artist,
+      }))
+    );
   } catch (err) {
-    console.error(err);
-    res.status(500).send("List error");
+    res.status(500).json({ error: err.message });
   }
 });
 
-// API: เสิร์ฟรูปจาก GridFS
-app.get("/api/banners/:id", async (req, res) => {
+// ✅ get banner by ID
+app.get("/api/banners/:id", (req, res) => {
   try {
-    const _id = new ObjectId(req.params.id);
-    const files = await db.collection("banners.files").find({ _id }).toArray();
-    if (!files.length) return res.status(404).send("Not found");
-
-    res.setHeader("Content-Type", files[0].contentType || "image/jpeg");
-    bucket.openDownloadStream(_id).pipe(res);
+    if (!bucket) return res.status(500).send("DB not connected");
+    const id = new ObjectId(req.params.id);
+    bucket.openDownloadStream(id).pipe(res);
   } catch (err) {
-    console.error(err);
-    res.status(500).send("Stream error");
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.listen(port, () => {
-  console.log(`🚀 Server running at http://localhost:${port}`);
+  console.log(`🚀 Server running at http://0.0.0.0:${port}`);
 });
-
